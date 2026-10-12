@@ -1,0 +1,27 @@
+# Secrets - NEVER commit
+.env
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pycache
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Data dumps - regenerate with dev/gen_dataset.py
+*.bson
+*.dump/
+
+# OS
+.DS_Store
+Thumbs.db
