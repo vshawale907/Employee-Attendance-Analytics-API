@@ -9,7 +9,7 @@ Re-read this file at the start of every phase alongside AGENTS.md.
 | Phase | Status | Notes |
 |-------|--------|-------|
 | 0 — Setup | 🟡 IN PROGRESS | |
-| 1 — Understanding report | ⬜ TODO | |
+| 1 — Understanding report | ✅ DONE | learning/00_UNDERSTANDING.md |
 | 2 — Part A review + fix | ⬜ TODO | |
 | 3 — Part B1 foundation + CRUD | ⬜ TODO | |
 | 4 — Part B2 analytics | ⬜ TODO | |
@@ -33,6 +33,9 @@ Re-read this file at the start of every phase alongside AGENTS.md.
 | A8 | Empty-string department → exact filter on "" | Prompt §7 | ACTIVE |
 | A9 | 422 evaluated before 404 | Prompt §7 | ACTIVE |
 | A10 | Overnight rule only when shift_end <= shift_start | Prompt §7 | ACTIVE |
+| A11 | PATCH with identical final state → 422 "nothing changed" | Phase 1 analysis | ACTIVE |
+| A12 | Trend `present_count` includes half-days as 0.5, weekends included | openapi.yaml | ACTIVE |
+| A13 | `avg_work_hours` averages ALL present-status records incl. weekends | §5.9 note 20 | ACTIVE |
 
 ---
 
