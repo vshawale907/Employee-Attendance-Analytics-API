@@ -40,12 +40,9 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 def init_indexes():
     """
-    WHAT: Idempotently creates all required compound and unique indexes.
-    WHERE: init_indexes() called during FastAPI lifespan startup.
-    WHY (Cite Rule): Assignment Section 4 requires all indexes created at startup
-    idempotently so queries use index scans (IXSCAN) without collection scans (COLLSCAN).
-    HOW TO TEST: Run db.collection.getIndexes() in mongosh.
-    WHAT BREAKS: Queries on large datasets (100k docs) do COLLSCAN and timeout.
+    Creates compound and unique indexes idempotently across employees
+    and attendance_logs collections to optimize query performance and
+    enforce storage-level data integrity.
     """
     # employees collection
     db.employees.create_index([("emp_code", 1)], unique=True)
@@ -82,10 +79,7 @@ app = FastAPI(
 
 @app.exception_handler(PyMongoError)
 def handle_mongo_exception(request: Request, exc: PyMongoError):
-    """
-    WHAT: Converts uncaught PyMongo exceptions into HTTP 503.
-    WHY: Rule Hard Constraints state that HTTP 500 is an immediate test failure.
-    """
+    """Translates uncaught database errors into HTTP 503 Service Unavailable."""
     return JSONResponse(
         status_code=503,
         content={"detail": f"Database error: {exc}"},
@@ -114,16 +108,9 @@ def from_epoch_ms(ms: int) -> datetime:
 
 def compute_record_date_and_shift(punch_in_utc: datetime, shift_start: str, shift_end: str):
     """
-    WHAT: Computes the IST attendance date and shift start/end UTC datetimes.
-    WHERE: compute_record_date_and_shift
-    WHY (Cite Rule): Rule R1: Shift times and attendance dates are IST (UTC+05:30).
-    A record's date is the IST calendar date of its punch_in. Overnight shifts
-    (shift_end <= shift_start): a punch-in earlier than shift_end belongs to the
-    shift that started the previous day.
-    HOW TO TEST:
-      - 2026-07-06T19:00:00Z (00:30 IST July 7), normal shift -> "2026-07-07"
-      - 2026-07-07T19:55:00Z (01:25 IST July 8), overnight shift 22:00-06:00 -> "2026-07-07"
-    WHAT BREAKS: Incorrect date grouping, wrong monthly reports, overtime/late calculated against wrong date.
+    Computes attendance date in Indian Standard Time (IST, UTC+05:30) and converts
+    shift start/end boundary times to UTC. Handles overnight shifts where shifts
+    ending early morning belong to the prior calendar day.
     """
     punch_in_ist = punch_in_utc.astimezone(IST)
     ist_date = punch_in_ist.date()
@@ -146,16 +133,9 @@ def compute_record_date_and_shift(punch_in_utc: datetime, shift_start: str, shif
 
 def compute_late_minutes(punch_in_utc: datetime, shift_start_utc: datetime) -> int:
     """
-    WHAT: Computes late minutes with strict 10-minute grace period.
-    WHERE: compute_late_minutes
-    WHY (Cite Rule): Rule R2: Grace period 10 minutes. Late only if punch-in is
-    strictly more than 10:00 (600 seconds) after shift_start; then late_minutes = whole
-    minutes (floor) since shift_start, not since grace period ended.
-    HOW TO TEST:
-      - 09:40:00 with 09:30 shift -> 0
-      - 09:40:01 with 09:30 shift -> 10
-      - 10:15:59 with 09:30 shift -> 45
-    WHAT BREAKS: Employees arriving at 09:40:01 marked on time (starter bug), failing grader R2 tests.
+    Calculates arrival delay in minutes. Applies a 10-minute grace period
+    where delays <= 10 minutes incur 0 penalty, while delays exceeding 10 minutes
+    count the full duration from scheduled shift start.
     """
     elapsed_seconds = int((punch_in_utc - shift_start_utc).total_seconds())
     if elapsed_seconds > 600:
@@ -165,12 +145,8 @@ def compute_late_minutes(punch_in_utc: datetime, shift_start_utc: datetime) -> i
 
 def compute_work_hours(punch_in_utc: datetime, punch_out_utc: datetime) -> float:
     """
-    WHAT: Computes elapsed work hours rounded to 2 decimals using round-half-up.
-    WHERE: compute_work_hours
-    WHY (Cite Rule): Rule R4 & R8: (punch_out - punch_in) in seconds / 3600,
-    rounded to 2 decimals half-up. Python round() is banned because it is half-even.
-    HOW TO TEST: 450 seconds (0.125h) -> 0.13 (Python round gives 0.12).
-    WHAT BREAKS: Cumulative work hour drift, incorrect half-day classifications at thresholds.
+    Computes total elapsed working hours rounded half-up to 2 decimal places
+    using Decimal arithmetic to prevent floating-point drift.
     """
     elapsed_seconds = int((punch_out_utc - punch_in_utc).total_seconds())
     if elapsed_seconds <= 0:
@@ -181,15 +157,8 @@ def compute_work_hours(punch_in_utc: datetime, punch_out_utc: datetime) -> float
 
 def compute_overtime(punch_out_utc: datetime, shift_end_utc: datetime) -> int:
     """
-    WHAT: Computes overtime minutes with 30-minute minimum threshold.
-    WHERE: compute_overtime
-    WHY (Cite Rule): Rule R3: Whole minutes (floor) from shift_end to punch_out,
-    counted only if that is at least 30; otherwise 0.
-    HOW TO TEST:
-      - 29 minutes past shift end -> 0
-      - 30 minutes past shift end -> 30
-      - 45 minutes past shift end -> 45
-    WHAT BREAKS: Small overstays (<30m) falsely credited as overtime.
+    Calculates overtime in minutes past shift end. Enforces a 30-minute minimum
+    qualification threshold.
     """
     elapsed_seconds = int((punch_out_utc - shift_end_utc).total_seconds())
     if elapsed_seconds < 0:
@@ -294,10 +263,7 @@ class RegularizeRequest(BaseModel):
 # --------------------------------------------------------------------------- #
 @app.get("/health", tags=["system"])
 def health():
-    """
-    WHAT: Verifies MongoDB connectivity via ping command.
-    WHY (Cite Rule): Assignment Section 7: 200 only when MongoDB answers; else 503.
-    """
+    """Verifies database connectivity via MongoDB ping command."""
     try:
         client.admin.command("ping")
         return {"status": "ok"}
@@ -308,9 +274,8 @@ def health():
 @app.post("/employees", status_code=201, tags=["employees"])
 def create_employee(body: EmployeeCreate):
     """
-    WHAT: Creates an employee record with race-safe unique index.
-    WHY (Cite Rule): Trap #5: Check-then-insert races. Unique index on emp_code
-    ensures atomic conflict detection. Instants stored as UTC datetime.
+    Registers a new employee record. Uniqueness of emp_code is enforced
+    at the database layer to prevent check-then-insert race conditions.
     """
     doc = body.model_dump()
     now_utc = datetime.now(timezone.utc).replace(microsecond=0)
@@ -331,10 +296,8 @@ def list_employees(
     page_size: int = Query(20, ge=1, le=100),
 ):
     """
-    WHAT: Lists employees sorted by emp_code ascending with correct pagination.
-    WHY (Cite Rule): Rule R10: page starts at 1, total reflects filters.
-    Fixes starter off-by-one pagination bug (skip = (page - 1) * page_size)
-    and handles empty string department queries correctly (Assumption A8).
+    Returns a paginated list of employees sorted by emp_code ascending.
+    Supports filtering by exact department match.
     """
     q = {}
     if department is not None:
@@ -357,12 +320,9 @@ def list_employees(
 @app.post("/attendance/punch-in", status_code=201, tags=["attendance"])
 def punch_in(body: PunchInRequest):
     """
-    WHAT: Opens a day's attendance record adhering to Rules R1 & R2 with concurrency safety.
-    WHY (Cite Rule):
-      - R1: Date derived from IST timestamp, overnight shifts handled.
-      - R2: Late minutes computed with 10-minute grace period.
-      - Concurrency: Atomic insert against unique index (emp_code, date) prevents race conditions.
-      - Contract: Returns epoch milliseconds, no _id or id leaked.
+    Records an employee punch-in. Computes the attendance date in IST
+    (handling overnight shifts) and calculates initial arrival delay.
+    Guarded by a unique compound index on (emp_code, date) to prevent duplicate punches.
     """
     emp = db.employees.find_one({"emp_code": body.emp_code})
     if not emp:
@@ -406,22 +366,9 @@ def punch_in(body: PunchInRequest):
 @app.post("/attendance/punch-out", status_code=200, tags=["attendance"])
 def punch_out(body: PunchOutRequest):
     """
-    WHAT: Records punch-out for an employee's most recent open record, computing work_hours,
-    overtime_minutes, and half_day.
-    WHERE: punch_out
-    WHY (Cite Rule):
-      - Rule R3: Overtime >= 30m counted, otherwise 0.
-      - Rule R4 & R8: work_hours = seconds / 3600, rounded 2 decimals half-up.
-      - Rule R5: half_day = work_hours < 4.50.
-      - Assumption A4: Check order: 404 (unknown employee / no punch-in) -> 409 (already punched out)
-        -> 422 (punched_at <= punch_in or > 24h).
-      - Concurrency: Atomic update guarding on punch_out: None.
-    HOW TO TEST:
-      - Punch in, punch out -> 200 with derived fields.
-      - Punch out again -> 409.
-      - Punch out before punch in -> 422.
-      - Concurrent punch out requests -> exactly one 200, others 409.
-    WHAT BREAKS: Concurrent punch outs overwrite each other; overnight shifts fail to match shift_end.
+    Records an employee punch-out for their open attendance record.
+    Calculates total work hours, overtime, and half-day status.
+    Uses atomic find_one_and_update to guarantee concurrency safety.
     """
     emp = db.employees.find_one({"emp_code": body.emp_code})
     if not emp:
@@ -505,21 +452,9 @@ def regularize_attendance(
     body: RegularizeRequest,
 ):
     """
-    WHAT: Regularizes (corrects) an attendance record, recomputes derived fields,
-    and appends an audit trail entry to history.
-    WHERE: regularize_attendance
-    WHY (Cite Rule):
-      - Section 5 & Rule R1-R5: Derived fields recomputed; history appends one entry.
-      - Rule R6: Presence requires punch_in; ABSENT/LEAVE clears punch times (A7).
-      - Rule R1: punch_in must stay on record's date.
-      - Assumption A11: Request changing nothing returns 422.
-      - Concurrency: Optimistic array match on history prevents lost updates (returns 409 on conflict).
-    HOW TO TEST:
-      - Change status to ABSENT without punch times -> clears times, appends history.
-      - Supplying punch_in with ABSENT -> 422.
-      - No changes -> 422.
-      - Concurrent edits -> exactly one succeeds, second gets 409.
-    WHAT BREAKS: Lost update anomaly when concurrent HR managers edit records.
+    Manually regularizes an attendance record, recalculating derived fields
+    (work hours, late minutes, overtime, half day) and appending an audit
+    trail entry to the history array.
     """
     # Validate date in path
     try:
@@ -683,12 +618,9 @@ def list_attendance(
     page_size: int = Query(20, ge=1, le=100),
 ):
     """
-    WHAT: Lists attendance logs sorted by date descending, emp_code ascending.
-    WHY (Cite Rule):
-      - Database pagination: avoids loading 100k records into memory.
-      - Stable sort: uses (date: -1, emp_code: 1) as tie-breaker.
-      - Date validation: date_from > date_to returns 422.
-      - Serialization: returns epoch milliseconds, no leaked internal ids.
+    Returns a paginated list of attendance logs sorted by date descending,
+    with emp_code ascending as a secondary tie-breaker. Supports filtering
+    by employee, date range, and status.
     """
     if date_from:
         try:
@@ -1083,9 +1015,9 @@ def employee_monthly(
     month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
 ):
     """
-    WHAT: Monthly attendance summary for one employee via MongoDB aggregation.
-    WHY (Cite Rule): R7 working days from joined_on, R5/R6 present days Mon-Fri only,
-    R8 attendance percentage rounding, A6 employee joined after month returns zeros and null pct.
+    Computes monthly attendance summary for an employee. Prorates working days
+    based on joined_on date, excludes weekends from present days, and calculates
+    financial-grade attendance percentage rounded half-up to 2 decimal places.
     """
     emp = db.employees.find_one({"emp_code": emp_code})
     if not emp:
@@ -1139,12 +1071,9 @@ def department_summary(
     department: Optional[str] = Query(None),
 ):
     """
-    WHAT: Cross-collection department summary for a month.
-    WHY (Cite Rule):
-      - R9: Headcount includes zero-log employees, excludes future joiners.
-      - R5/R7: Present days Mon-Fri only, half-day=0.5.
-      - Trap #20: avg_work_hours averages all present-status records incl weekends.
-      - R8: 2 decimals half-up.
+    Computes a cross-collection department-level monthly attendance summary.
+    Counts active headcount from employees collection (including zero-log employees),
+    and aggregates weekday present days and overall average working hours.
     """
     month_start, month_end, _, _ = get_month_range(month)
     pipeline = build_department_summary_pipeline(month_start, month_end, department)
@@ -1180,11 +1109,8 @@ def late_leaderboard(
     department: Optional[str] = Query(None),
 ):
     """
-    WHAT: Late leaderboard for a month using standard competition ranking ($rank).
-    WHY (Cite Rule):
-      - Ties share rank (1, 2, 2, 4); next rank skipped.
-      - Limit applies after ranking (rank <= limit).
-      - Sort order: total_late_minutes descending, emp_code ascending.
+    Generates a monthly late arrival leaderboard using standard competition ranking ($rank).
+    Employees tied on late minutes share rank with subsequent ranks skipped.
     """
     month_start, month_end, _, _ = get_month_range(month)
     pipeline = build_late_leaderboard_pipeline(month_start, month_end, limit, department)
@@ -1214,13 +1140,8 @@ def department_trend(
     to_date: str = Query(..., alias="to", pattern=r"^\d{4}-\d{2}-\d{2}$"),
 ):
     """
-    WHAT: Daily series trend for department with $densify and 7-day moving average.
-    WHY (Cite Rule):
-      - Trap #17: Exactly (to - from + 1) rows.
-      - R9: Daily headcount based on joined_on <= date.
-      - R8: Attendance rate (4 decimals half-up) on working days with headcount > 0.
-      - A1: 7-day MA uses reported 4-decimal rates over window.
-      - A2: Reject range > 92 days.
+    Generates a continuous daily attendance trend for a department up to 92 days.
+    Fills calendar gaps using $densify and calculates 7-day moving averages.
     """
     try:
         d_from = date_cls.fromisoformat(from_date)
@@ -1274,7 +1195,7 @@ def department_trend(
             "attendance_rate": att_rate,
         })
 
-    # Calculate 7-day moving average using reported rates (Assumption A1)
+    # Calculate 7-day moving average using reported rates
     final_items = []
     for i, row in enumerate(processed_days):
         window_rates = [r for r in rates[max(0, i - 6): i + 1] if r is not None]
@@ -1294,7 +1215,7 @@ def department_trend(
 
 
 # --------------------------------------------------------------------------- #
-# Admin Explain Endpoint (Phase 5)
+# Admin Explain Endpoint
 # --------------------------------------------------------------------------- #
 class ExplainEndpoint(str, Enum):
     attendance_list = "attendance_list"
@@ -1320,17 +1241,8 @@ def explain_endpoint(
     page_size: int = Query(20, ge=1, le=100),
 ):
     """
-    WHAT: Runs MongoDB explain with executionStats for the main query or aggregation
-    of the named endpoint, built exactly as that endpoint builds it.
-    WHERE: GET /admin/explain/{endpoint}
-    WHY (Cite Rule): Assignment Section 10 & openapi.yaml:
-      - Accepts the same query parameters as the endpoint it explains.
-      - Missing required parameters return HTTP 422.
-      - Grader checks that the plan contains IXSCAN and NO COLLSCAN on a ~100k-record dataset.
-      - Trap #18: Explain must be built by the real builders.
-    HOW TO TEST: Call /admin/explain/{endpoint} with expected parameters; assert 'explain'
-      field contains executionStats and uses IXSCAN index bounds.
-    WHAT BREAKS: Ad-hoc query strings drift from real endpoints, or un-indexed queries COLLSCAN.
+    Executes MongoDB explain with executionStats verbosity for the primary query
+    or aggregation pipeline of the named endpoint, confirming index utilization.
     """
     if endpoint == ExplainEndpoint.attendance_list:
         if date_from:

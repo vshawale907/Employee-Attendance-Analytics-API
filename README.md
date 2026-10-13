@@ -138,5 +138,5 @@ pytest tests -v
 ## Project Documentation
 
 - **[DECISIONS.md](DECISIONS.md):** Architectural decisions covering index selections, punch race handling, tie breakers, headcount logic, and 100x scalability.
-- **[REVIEW.md](REVIEW.md):** Catalog of all starter defects identified and resolved during initial review.
-- **[learning/](learning/):** In-depth educational guides explaining system concepts, CRUD lifecycles, aggregations, query plans, and test architectures.
+- **[REVIEW.md](REVIEW.md):** Catalog of starter defects identified and resolved during initial review.
+
