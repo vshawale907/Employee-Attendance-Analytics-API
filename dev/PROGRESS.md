@@ -11,7 +11,7 @@ Re-read this file at the start of every phase alongside AGENTS.md.
 | 0 — Setup | ✅ DONE | Environment, Mongo 8.0, 15 docs |
 | 1 — Understanding report | ✅ DONE | learning/00_UNDERSTANDING.md |
 | 2 — Part A review + fix | ✅ DONE | REVIEW.md, app/main.py, learning/01_STARTER_REVIEW_AND_FIXES.md |
-| 3 — Part B1 foundation + CRUD | ⬜ TODO | |
+| 3 — Part B1 foundation + CRUD | ✅ DONE | punch-out, regularize (PATCH), learning/02_CRUD_AND_PUNCH_LIFECYCLE.md |
 | 4 — Part B2 analytics | ⬜ TODO | |
 | 5 — Part C explain + DECISIONS.md | ⬜ TODO | |
 | 6 — Verification harness | ⬜ TODO | |
