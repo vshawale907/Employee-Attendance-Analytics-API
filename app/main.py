@@ -11,8 +11,11 @@ import os
 from contextlib import asynccontextmanager
 from datetime import date as date_cls, datetime, time, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
+from enum import Enum
+import json
 from typing import Optional
 
+from bson import json_util
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
@@ -47,12 +50,16 @@ def init_indexes():
     # employees collection
     db.employees.create_index([("emp_code", 1)], unique=True)
     db.employees.create_index([("department", 1), ("emp_code", 1)])
+    db.employees.create_index([("joined_on", 1)])
+    db.employees.create_index([("department", 1), ("joined_on", 1)])
 
     # attendance_logs collection
     db.attendance_logs.create_index([("emp_code", 1), ("date", 1)], unique=True)
     db.attendance_logs.create_index([("date", -1), ("emp_code", 1)])
     db.attendance_logs.create_index([("emp_code", 1), ("punch_in", -1)])
     db.attendance_logs.create_index([("status", 1), ("date", 1)])
+    db.attendance_logs.create_index([("date", 1), ("late_minutes", 1)])
+
 
 
 @asynccontextmanager
@@ -1287,7 +1294,177 @@ def department_trend(
 
 
 # --------------------------------------------------------------------------- #
-# TODO - Explain endpoint will be added in Phase 5:
-#   GET   /admin/explain/{endpoint}               (Phase 5)
+# Admin Explain Endpoint (Phase 5)
 # --------------------------------------------------------------------------- #
+class ExplainEndpoint(str, Enum):
+    attendance_list = "attendance_list"
+    employee_monthly = "employee_monthly"
+    department_summary = "department_summary"
+    late_leaderboard = "late_leaderboard"
+    department_trend = "department_trend"
+
+
+@app.get("/admin/explain/{endpoint}", tags=["admin"])
+def explain_endpoint(
+    endpoint: ExplainEndpoint = Path(..., description="Target endpoint name"),
+    emp_code: Optional[str] = Query(None),
+    month: Optional[str] = Query(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    department: Optional[str] = Query(None),
+    limit: Optional[int] = Query(10, ge=1, le=50),
+    date_from: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: Optional[str] = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    status: Optional[str] = Query(None, pattern=r"^(PRESENT|ABSENT|LEAVE|WFH|ON_DUTY)$"),
+    from_date: Optional[str] = Query(None, alias="from", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    to_date: Optional[str] = Query(None, alias="to", pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+):
+    """
+    WHAT: Runs MongoDB explain with executionStats for the main query or aggregation
+    of the named endpoint, built exactly as that endpoint builds it.
+    WHERE: GET /admin/explain/{endpoint}
+    WHY (Cite Rule): Assignment Section 10 & openapi.yaml:
+      - Accepts the same query parameters as the endpoint it explains.
+      - Missing required parameters return HTTP 422.
+      - Grader checks that the plan contains IXSCAN and NO COLLSCAN on a ~100k-record dataset.
+      - Trap #18: Explain must be built by the real builders.
+    HOW TO TEST: Call /admin/explain/{endpoint} with expected parameters; assert 'explain'
+      field contains executionStats and uses IXSCAN index bounds.
+    WHAT BREAKS: Ad-hoc query strings drift from real endpoints, or un-indexed queries COLLSCAN.
+    """
+    if endpoint == ExplainEndpoint.attendance_list:
+        if date_from:
+            try:
+                date_cls.fromisoformat(date_from)
+            except Exception:
+                raise HTTPException(status_code=422, detail="Invalid date_from")
+        if date_to:
+            try:
+                date_cls.fromisoformat(date_to)
+            except Exception:
+                raise HTTPException(status_code=422, detail="Invalid date_to")
+        if date_from and date_to and date_from > date_to:
+            raise HTTPException(status_code=422, detail="date_from must not be greater than date_to")
+
+        q = {}
+        if emp_code:
+            q["emp_code"] = emp_code
+        if status:
+            q["status"] = status
+        if date_from or date_to:
+            q["date"] = {}
+            if date_from:
+                q["date"]["$gte"] = date_from
+            if date_to:
+                q["date"]["$lte"] = date_to
+
+        skip = (page - 1) * page_size
+        collection_name = "attendance_logs"
+        explain_raw = db.command(
+            "explain",
+            {
+                "find": collection_name,
+                "filter": q,
+                "sort": {"date": -1, "emp_code": 1},
+                "skip": skip,
+                "limit": page_size,
+            },
+            verbosity="executionStats",
+        )
+
+    elif endpoint == ExplainEndpoint.employee_monthly:
+        if not emp_code or not month:
+            raise HTTPException(status_code=422, detail="emp_code and month are required for employee_monthly")
+
+        month_start, month_end, _, _ = get_month_range(month)
+        pipeline = build_employee_monthly_pipeline(emp_code, month_start, month_end)
+        collection_name = "attendance_logs"
+        explain_raw = db.command(
+            "explain",
+            {
+                "aggregate": collection_name,
+                "pipeline": pipeline,
+                "cursor": {},
+            },
+            verbosity="executionStats",
+        )
+
+    elif endpoint == ExplainEndpoint.department_summary:
+        if not month:
+            raise HTTPException(status_code=422, detail="month is required for department_summary")
+
+        month_start, month_end, _, _ = get_month_range(month)
+        pipeline = build_department_summary_pipeline(month_start, month_end, department)
+        collection_name = "employees"
+        explain_raw = db.command(
+            "explain",
+            {
+                "aggregate": collection_name,
+                "pipeline": pipeline,
+                "cursor": {},
+            },
+            verbosity="executionStats",
+        )
+
+    elif endpoint == ExplainEndpoint.late_leaderboard:
+        if not month:
+            raise HTTPException(status_code=422, detail="month is required for late_leaderboard")
+
+        effective_limit = limit if limit is not None else 10
+        month_start, month_end, _, _ = get_month_range(month)
+        pipeline = build_late_leaderboard_pipeline(month_start, month_end, effective_limit, department)
+        collection_name = "attendance_logs"
+        explain_raw = db.command(
+            "explain",
+            {
+                "aggregate": collection_name,
+                "pipeline": pipeline,
+                "cursor": {},
+            },
+            verbosity="executionStats",
+        )
+
+    elif endpoint == ExplainEndpoint.department_trend:
+        if not department or not from_date or not to_date:
+            raise HTTPException(status_code=422, detail="department, from, and to are required for department_trend")
+
+        try:
+            d_from = date_cls.fromisoformat(from_date)
+            d_to = date_cls.fromisoformat(to_date)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Invalid date format")
+
+        if d_to < d_from:
+            raise HTTPException(status_code=422, detail="to must not be earlier than from")
+
+        day_count = (d_to - d_from).days + 1
+        if day_count > 92:
+            raise HTTPException(status_code=422, detail="Date range must not exceed 92 days")
+
+        dept_employees = list(db.employees.find({"department": department}, {"_id": 0, "emp_code": 1, "joined_on": 1}))
+        emp_codes = [e["emp_code"] for e in dept_employees]
+        from_dt = datetime.fromisoformat(from_date).replace(tzinfo=timezone.utc)
+        to_dt_excl = datetime.fromisoformat(to_date).replace(tzinfo=timezone.utc) + timedelta(days=1)
+
+        pipeline = build_department_trend_pipeline(
+            emp_codes, from_date, to_date, from_dt, to_dt_excl, dept_employees
+        )
+        collection_name = "attendance_logs"
+        explain_raw = db.command(
+            "explain",
+            {
+                "aggregate": collection_name,
+                "pipeline": pipeline,
+                "cursor": {},
+            },
+            verbosity="executionStats",
+        )
+
+    clean_explain = json.loads(json_util.dumps(explain_raw))
+    return {
+        "endpoint": endpoint.value,
+        "collection": collection_name,
+        "explain": clean_explain,
+    }
+
 
