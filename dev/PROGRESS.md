@@ -15,7 +15,8 @@ Re-read this file at the start of every phase alongside AGENTS.md.
 | 4 — Part B2 analytics | ✅ DONE | 4 aggregation pipelines, $rank, $densify, learning/03_ANALYTICS_AND_AGGREGATIONS.md |
 | 5 — Part C explain + DECISIONS.md | ✅ DONE | /admin/explain/{endpoint}, index tuning, DECISIONS.md, learning/04_EXPLAIN_AND_INDEXES.md |
 | 6 — Verification harness | ✅ DONE | 22 pytest tests in tests/ covering all 12 endpoints, rules, traps, and concurrency |
-| 7 — Learning pack + README + final audit | ⬜ TODO | |
+| 7 — Learning pack + README + final audit | ✅ DONE | Production README.md, learning/06_ARCHITECTURE_AND_RETROSPECTIVE.md, final audit passed |
+
 
 ---
 
