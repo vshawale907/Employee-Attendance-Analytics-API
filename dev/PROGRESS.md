@@ -14,7 +14,7 @@ Re-read this file at the start of every phase alongside AGENTS.md.
 | 3 — Part B1 foundation + CRUD | ✅ DONE | punch-out, regularize (PATCH), learning/02_CRUD_AND_PUNCH_LIFECYCLE.md |
 | 4 — Part B2 analytics | ✅ DONE | 4 aggregation pipelines, $rank, $densify, learning/03_ANALYTICS_AND_AGGREGATIONS.md |
 | 5 — Part C explain + DECISIONS.md | ✅ DONE | /admin/explain/{endpoint}, index tuning, DECISIONS.md, learning/04_EXPLAIN_AND_INDEXES.md |
-| 6 — Verification harness | ⬜ TODO | |
+| 6 — Verification harness | ✅ DONE | 22 pytest tests in tests/ covering all 12 endpoints, rules, traps, and concurrency |
 | 7 — Learning pack + README + final audit | ⬜ TODO | |
 
 ---
